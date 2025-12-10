@@ -58,9 +58,56 @@ func NewOrderStateConsumerWithConfig(conn *Connection, handler OrderStateEventHa
 		return nil, fmt.Errorf("宣告交換器失敗: %w", err)
 	}
 
-	// 宣告死信隊列（用於處理重試超過限制的消息）
+	// 宣告 RabbitMQ 死信交換器和佇列（與主後端保持一致）
+	dlx := "dead.letter.exchange"
+	dlq := "order_state_queue.dlq"
+	dlqRoutingKey := "order.state.dlq"
+
+	// 宣告死信交換器
+	err = channel.ExchangeDeclare(
+		dlx,    // exchange name
+		"direct", // type
+		true,     // durable
+		false,    // auto-deleted
+		false,    // internal
+		false,    // no-wait
+		nil,      // arguments
+	)
+	if err != nil {
+		channel.Close()
+		return nil, fmt.Errorf("宣告死信交換器失敗: %w", err)
+	}
+
+	// 宣告 RabbitMQ 死信佇列（用於 RabbitMQ 自動轉發失敗訊息）
 	_, err = channel.QueueDeclare(
-		"order_state_queue_dlq", // dead letter queue name
+		dlq,    // dead letter queue name
+		true,   // durable
+		false,  // delete when unused
+		false,  // exclusive
+		false,  // no-wait
+		nil,    // arguments
+	)
+	if err != nil {
+		channel.Close()
+		return nil, fmt.Errorf("宣告 RabbitMQ 死信佇列失敗: %w", err)
+	}
+
+	// 綁定 RabbitMQ 死信佇列
+	err = channel.QueueBind(
+		dlq,           // queue name
+		dlqRoutingKey, // routing key
+		dlx,           // exchange
+		false,
+		nil,
+	)
+	if err != nil {
+		channel.Close()
+		return nil, fmt.Errorf("綁定 RabbitMQ 死信佇列失敗: %w", err)
+	}
+
+	// 宣告應用層死信隊列（用於處理重試超過限制的消息）
+	_, err = channel.QueueDeclare(
+		"order_state_queue_dlq", // application-level dead letter queue name
 		true,                     // durable
 		false,                    // delete when unused
 		false,                    // exclusive
@@ -69,10 +116,10 @@ func NewOrderStateConsumerWithConfig(conn *Connection, handler OrderStateEventHa
 	)
 	if err != nil {
 		channel.Close()
-		return nil, fmt.Errorf("宣告死信隊列失敗: %w", err)
+		return nil, fmt.Errorf("宣告應用層死信隊列失敗: %w", err)
 	}
 
-	// 綁定死信隊列（使用不同的 routing key）
+	// 綁定應用層死信隊列（使用不同的 routing key）
 	err = channel.QueueBind(
 		"order_state_queue_dlq",              // queue name
 		"order.state.payment.completed.dlq",  // routing key for DLQ
@@ -82,17 +129,20 @@ func NewOrderStateConsumerWithConfig(conn *Connection, handler OrderStateEventHa
 	)
 	if err != nil {
 		channel.Close()
-		return nil, fmt.Errorf("綁定死信隊列失敗: %w", err)
+		return nil, fmt.Errorf("綁定應用層死信隊列失敗: %w", err)
 	}
 
-	// 宣告隊列（與後端保持一致）
+	// 宣告隊列（與後端保持一致，包含死信參數）
 	_, err = channel.QueueDeclare(
 		"order_state_queue", // queue name
 		true,                 // durable
 		false,                // delete when unused
 		false,                // exclusive
 		false,                // no-wait
-		nil,                  // arguments
+		amqp.Table{           // arguments - 設定死信參數
+			"x-dead-letter-exchange":    dlx,
+			"x-dead-letter-routing-key": dlqRoutingKey,
+		},
 	)
 	if err != nil {
 		channel.Close()
@@ -320,20 +370,62 @@ func (c *OrderStateConsumer) setupChannel(channel *amqp.Channel) error {
 		return fmt.Errorf("宣告交換器失敗: %w", err)
 	}
 
-	// 宣告死信隊列
-	_, err := channel.QueueDeclare(
-		"order_state_queue_dlq",
-		true,  // durable
-		false, // delete when unused
-		false, // exclusive
-		false, // no-wait
-		nil,   // arguments
-	)
-	if err != nil {
-		return fmt.Errorf("宣告死信隊列失敗: %w", err)
+	// 宣告 RabbitMQ 死信交換器和佇列（與主後端保持一致）
+	dlx := "dead.letter.exchange"
+	dlq := "order_state_queue.dlq"
+	dlqRoutingKey := "order.state.dlq"
+
+	// 宣告死信交換器
+	if err := channel.ExchangeDeclare(
+		dlx,      // exchange name
+		"direct", // type
+		true,     // durable
+		false,    // auto-deleted
+		false,    // internal
+		false,    // no-wait
+		nil,      // arguments
+	); err != nil {
+		return fmt.Errorf("宣告死信交換器失敗: %w", err)
 	}
 
-	// 綁定死信隊列
+	// 宣告 RabbitMQ 死信佇列（用於 RabbitMQ 自動轉發失敗訊息）
+	_, err := channel.QueueDeclare(
+		dlq,    // dead letter queue name
+		true,   // durable
+		false,  // delete when unused
+		false,  // exclusive
+		false,  // no-wait
+		nil,    // arguments
+	)
+	if err != nil {
+		return fmt.Errorf("宣告 RabbitMQ 死信佇列失敗: %w", err)
+	}
+
+	// 綁定 RabbitMQ 死信佇列
+	if err := channel.QueueBind(
+		dlq,           // queue name
+		dlqRoutingKey, // routing key
+		dlx,           // exchange
+		false,
+		nil,
+	); err != nil {
+		return fmt.Errorf("綁定 RabbitMQ 死信佇列失敗: %w", err)
+	}
+
+	// 宣告應用層死信隊列（用於處理重試超過限制的消息）
+	_, err = channel.QueueDeclare(
+		"order_state_queue_dlq", // application-level dead letter queue name
+		true,                     // durable
+		false,                    // delete when unused
+		false,                    // exclusive
+		false,                    // no-wait
+		nil,                      // arguments
+	)
+	if err != nil {
+		return fmt.Errorf("宣告應用層死信隊列失敗: %w", err)
+	}
+
+	// 綁定應用層死信隊列
 	if err := channel.QueueBind(
 		"order_state_queue_dlq",
 		"order.state.payment.completed.dlq",
@@ -341,17 +433,20 @@ func (c *OrderStateConsumer) setupChannel(channel *amqp.Channel) error {
 		false,
 		nil,
 	); err != nil {
-		return fmt.Errorf("綁定死信隊列失敗: %w", err)
+		return fmt.Errorf("綁定應用層死信隊列失敗: %w", err)
 	}
 
-	// 宣告隊列
+	// 宣告隊列（與後端保持一致，包含死信參數）
 	_, err = channel.QueueDeclare(
 		"order_state_queue",
 		true,  // durable
 		false, // delete when unused
 		false, // exclusive
 		false, // no-wait
-		nil,   // arguments
+		amqp.Table{ // arguments - 設定死信參數
+			"x-dead-letter-exchange":    dlx,
+			"x-dead-letter-routing-key": dlqRoutingKey,
+		},
 	)
 	if err != nil {
 		return fmt.Errorf("宣告隊列失敗: %w", err)

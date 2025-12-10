@@ -19,13 +19,13 @@ func NewRabbitMQEventPublisher(producer *rabbitmq.OrderStateProducer) *RabbitMQE
 	}
 }
 
-// PublishOrderStatusChanged 發布訂單狀態變更事件
+// PublishOrderStatusChanged 發布訂單狀態變更事件（統一使用數字 enum）
 func (p *RabbitMQEventPublisher) PublishOrderStatusChanged(event domain.OrderStatusChangedEvent) error {
 	message := rabbitmq.OrderStatusChangedMessage{
 		EventType:  event.EventType(),
 		OrderID:    event.OrderID(),
-		FromStatus: string(event.FromStatus),
-		ToStatus:   string(event.ToStatus),
+		FromStatus: event.FromStatus.ToInt(), // 轉換為數字 enum
+		ToStatus:   event.ToStatus.ToInt(),   // 轉換為數字 enum
 		Timestamp:  event.Timestamp().Format(time.RFC3339),
 	}
 

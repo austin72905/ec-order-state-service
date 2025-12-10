@@ -25,7 +25,7 @@ type Config struct {
 	DBWriteTimeout time.Duration // 寫入操作超時時間
 	// RabbitMQ Consumer 配置
 	RabbitMQPrefetchCount int // Prefetch count
-	RabbitMQWorkerCount    int // Worker 數量
+	RabbitMQWorkerCount   int // Worker 數量
 	// 調度器配置
 	SchedulerWorkerCount int           // 調度器 Worker 數量
 	SchedulerBatchSize   int           // 每次處理的訂單數量
@@ -34,12 +34,31 @@ type Config struct {
 
 // LoadConfig 載入配置（從環境變數）
 func LoadConfig() *Config {
+	// 連線字串優先順序：環境變數（多個候選鍵，取第一個非空） > 預設值
+	dbURL := getEnvFirstNonEmpty(
+		[]string{
+			"DB_CONNECTION_STRING",
+			"DB_CONN_STRING",
+			"DATABASE_URL",
+		},
+		"postgres://postgres:postgres@localhost:5433/ec_order_state?sslmode=disable",
+	)
+
+	rabbitURL := getEnvFirstNonEmpty(
+		[]string{
+			"RABBITMQ_URL",
+			"RABBITMQ_CONNECTION_STRING",
+			"AMQP_URL",
+		},
+		"amqp://guest:guest@localhost:5672/",
+	)
+
 	cfg := &Config{
 		Port: getEnv("PORT", "8080"),
 		// 資料庫配置（使用與主程式相同的 PostgreSQL 實體，但不同的資料庫）
-		DatabaseURL: getEnv("DATABASE_URL", "postgres://postgres:postgres@localhost:5433/ec_order_state?sslmode=disable"),
+		DatabaseURL: dbURL,
 		// RabbitMQ 配置
-		RabbitMQURL: getEnv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/"),
+		RabbitMQURL: rabbitURL,
 		// 資料庫連接池配置
 		DBMaxConns:          getEnvAsInt("DB_MAX_CONNS", 20),
 		DBMinConns:          getEnvAsInt("DB_MIN_CONNS", 5),
@@ -51,7 +70,7 @@ func LoadConfig() *Config {
 		DBWriteTimeout: getEnvAsDuration("DB_WRITE_TIMEOUT", 10*time.Second),
 		// RabbitMQ Consumer 配置
 		RabbitMQPrefetchCount: getEnvAsInt("RABBITMQ_PREFETCH_COUNT", 10),
-		RabbitMQWorkerCount:    getEnvAsInt("RABBITMQ_WORKER_COUNT", 10),
+		RabbitMQWorkerCount:   getEnvAsInt("RABBITMQ_WORKER_COUNT", 10),
 		// 調度器配置
 		SchedulerWorkerCount: getEnvAsInt("SCHEDULER_WORKER_COUNT", 5),
 		SchedulerBatchSize:   getEnvAsInt("SCHEDULER_BATCH_SIZE", 100),
@@ -104,3 +123,12 @@ func getEnvAsDuration(key string, defaultValue time.Duration) time.Duration {
 	return defaultValue
 }
 
+// getEnvFirstNonEmpty 回傳候選鍵中第一個非空值，若皆無則返回預設值
+func getEnvFirstNonEmpty(keys []string, defaultValue string) string {
+	for _, key := range keys {
+		if val := os.Getenv(key); val != "" {
+			return val
+		}
+	}
+	return defaultValue
+}
