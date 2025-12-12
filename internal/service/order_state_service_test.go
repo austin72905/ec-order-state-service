@@ -90,6 +90,31 @@ func (r *TestOrderRepository) GetOrdersByStatus(status domain.OrderStatus, limit
 	return orders[offset:end], nil
 }
 
+// BatchUpdateOrderStatus 測試用批次更新（簡化版）
+func (r *TestOrderRepository) BatchUpdateOrderStatus(orderIDs []string, newStatus domain.OrderStatus, fromStatus domain.OrderStatus) error {
+	if len(orderIDs) == 0 {
+		return nil
+	}
+	for _, id := range orderIDs {
+		if order, ok := r.orders[id]; ok && order.Status == fromStatus {
+			order.Status = newStatus
+		}
+	}
+	return nil
+}
+
+// BatchAddOrderSteps 測試用批次新增步驟（簡化版）
+func (r *TestOrderRepository) BatchAddOrderSteps(steps []*domain.OrderStep) error {
+	for _, step := range steps {
+		if r.orderSteps[step.OrderID] == nil {
+			r.orderSteps[step.OrderID] = make([]domain.OrderStep, 0)
+		}
+		stepCopy := *step
+		r.orderSteps[step.OrderID] = append(r.orderSteps[step.OrderID], stepCopy)
+	}
+	return nil
+}
+
 func TestOrderStateService_HandlePaymentCompleted(t *testing.T) {
 	t.Run("訂單不存在時應該創建新訂單", func(t *testing.T) {
 		// Arrange
