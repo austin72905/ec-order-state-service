@@ -55,7 +55,6 @@ func (f *orderStateFeature) 系統中存在一筆訂單(orderID string) error {
 		Status:    domain.StatusCreated,
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
-		OrderSteps: []domain.OrderStep{},
 	}
 	f.orderRepo.Save(order)
 	f.currentOrder = order
@@ -75,10 +74,6 @@ func (f *orderStateFeature) 系統已啟用訂單狀態微服務並連線到Rabb
 	return nil
 }
 
-func (f *orderStateFeature) 系統會在每次狀態變更時自動新增一筆OrderStep記錄() error {
-	// 這個行為已經在 Order.UpdateStatus 中實作
-	return nil
-}
 
 func (f *orderStateFeature) 系統會在每次狀態變更時發布一個訂單狀態變更事件() error {
 	// 這個行為已經在 OrderStateService 中實作
@@ -130,7 +125,6 @@ func (f *orderStateFeature) 系統中有筆狀態的訂單(count, status string)
 			Status:    statusEnum,
 			CreatedAt: time.Now(),
 			UpdatedAt: time.Now(),
-			OrderSteps: []domain.OrderStep{},
 		}
 		f.orderRepo.Save(order)
 		f.schedulerOrders = append(f.schedulerOrders, order)
@@ -190,23 +184,6 @@ func (f *orderStateFeature) 在下一次定時器執行時部分訂單的狀態�
 	return nil
 }
 
-func (f *orderStateFeature) 如果訂單狀態更新應新增一筆OrderStep記錄fromStatus為toStatus為(fromStatus, toStatus string) error {
-	// 只檢查已更新的訂單
-	for _, order := range f.updatedOrders {
-		steps, err := f.orderRepo.GetOrderSteps(order.ID)
-		if err != nil {
-			continue
-		}
-		for _, step := range steps {
-			if step.FromStatus == domain.OrderStatus(fromStatus) &&
-				step.ToStatus == domain.OrderStatus(toStatus) {
-				return nil
-			}
-		}
-	}
-	// 如果沒有更新的訂單，這不是錯誤（因為是隨機的）
-	return nil
-}
 
 func (f *orderStateFeature) 如果訂單狀態更新應發布一個事件到RabbitMQ其內容fromStatus為toStatus為(eventType, fromStatus, toStatus string) error {
 	// 只檢查已更新的訂單是否有發布事件
@@ -362,9 +339,8 @@ func (f *orderStateFeature) 主後端資料庫中訂單的狀態應該同步更�
 	return nil
 }
 
-func (f *orderStateFeature) 主後端資料庫中應該新增對應的OrderStep記錄() error {
-	// 在測試環境中，我們無法直接驗證主後端資料庫
-	// 但我們可以驗證事件是否被正確發布
+func (f *orderStateFeature) _主後端資料庫中應該新增對應的OrderStep記錄_已移除() error {
+	// OrderStep 功能已移除
 	return nil
 }
 
@@ -405,7 +381,6 @@ func (f *orderStateFeature) 訂單狀態為(orderID, status string) error {
 		Status:    domain.OrderStatus(status),
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
-		OrderSteps: []domain.OrderStep{},
 	}
 	f.orderRepo.Save(order)
 	f.currentOrder = order
@@ -521,60 +496,13 @@ func (f *orderStateFeature) 訂單的狀態應該更新為(orderID, expectedStat
 	return nil
 }
 
-func (f *orderStateFeature) 應新增一筆OrderStep記錄(stepJSON *godog.DocString) error {
-	var expectedStep struct {
-		OrderID    string `json:"orderId"`
-		FromStatus string `json:"fromStatus"`
-		ToStatus   string `json:"toStatus"`
-	}
-	if err := json.Unmarshal([]byte(stepJSON.Content), &expectedStep); err != nil {
-		return err
-	}
-
-	steps, err := f.orderRepo.GetOrderSteps(expectedStep.OrderID)
-	if err != nil {
-		return err
-	}
-
-	found := false
-	for _, step := range steps {
-		if step.FromStatus == domain.OrderStatus(expectedStep.FromStatus) &&
-			step.ToStatus == domain.OrderStatus(expectedStep.ToStatus) {
-			found = true
-			break
-		}
-	}
-
-	assert.True(nil, found, "應該找到 OrderStep: %s -> %s", expectedStep.FromStatus, expectedStep.ToStatus)
+func (f *orderStateFeature) _應新增一筆OrderStep記錄_已移除(stepJSON *godog.DocString) error {
+	// OrderStep 功能已移除
 	return nil
 }
 
-func (f *orderStateFeature) 應新增一筆OrderStep記錄fromStatus為toStatus為(fromStatus, toStatus string) error {
-	// 從當前訂單或最後處理的事件中獲取 orderID
-	var orderID string
-	if f.currentOrder != nil {
-		orderID = f.currentOrder.ID
-	} else if f.lastEvent != nil {
-		orderID = f.lastEvent.OrderID()
-	} else {
-		return fmt.Errorf("無法確定訂單 ID")
-	}
-
-	steps, err := f.orderRepo.GetOrderSteps(orderID)
-	if err != nil {
-		return err
-	}
-
-	found := false
-	for _, step := range steps {
-		if step.FromStatus == domain.OrderStatus(fromStatus) &&
-			step.ToStatus == domain.OrderStatus(toStatus) {
-			found = true
-			break
-		}
-	}
-
-	assert.True(nil, found, "應該找到 OrderStep: %s -> %s", fromStatus, toStatus)
+func (f *orderStateFeature) _應新增一筆OrderStep記錄fromStatus為toStatus為_已移除(fromStatus, toStatus string) error {
+	// OrderStep 功能已移除
 	return nil
 }
 
@@ -621,30 +549,8 @@ func (f *orderStateFeature) 應發布一個事件其內容fromStatus為toStatus�
 	return nil
 }
 
-func (f *orderStateFeature) 最終訂單的OrderStep記錄應該依順序包含以下轉換(orderID string, table *godog.Table) error {
-	steps, err := f.orderRepo.GetOrderSteps(orderID)
-	if err != nil {
-		return err
-	}
-
-	expectedCount := len(table.Rows) - 1 // 減去標題行
-	assert.Equal(nil, expectedCount, len(steps), "OrderStep 數量應該為 %d，但實際為 %d", expectedCount, len(steps))
-
-	for i, row := range table.Rows[1:] { // 跳過標題行
-		if i >= len(steps) {
-			return fmt.Errorf("OrderStep 數量不足，期望至少 %d 個", i+1)
-		}
-
-		expectedFrom := row.Cells[0].Value
-		expectedTo := row.Cells[1].Value
-
-		step := steps[i]
-		assert.Equal(nil, domain.OrderStatus(expectedFrom), step.FromStatus,
-			"第 %d 個 OrderStep 的 FromStatus 應該為 %s", i+1, expectedFrom)
-		assert.Equal(nil, domain.OrderStatus(expectedTo), step.ToStatus,
-			"第 %d 個 OrderStep 的 ToStatus 應該為 %s", i+1, expectedTo)
-	}
-
+func (f *orderStateFeature) _最終訂單的OrderStep記錄應該依順序包含以下轉換_已移除(orderID string, table *godog.Table) error {
+	// OrderStep 功能已移除
 	return nil
 }
 
@@ -686,9 +592,8 @@ func (f *orderStateFeature) 訂單的狀態應該仍然為(orderID, expectedStat
 	return nil
 }
 
-func (f *orderStateFeature) 不應新增任何新的OrderStep記錄() error {
-	// 這個步驟在場景中會與其他步驟配合使用
-	// 實際驗證會在具體的場景中進行
+func (f *orderStateFeature) _不應新增任何新的OrderStep記錄_已移除() error {
+	// OrderStep 功能已移除
 	return nil
 }
 
@@ -734,7 +639,6 @@ func (f *orderStateFeature) 系統中存在狀態從到的轉換請求訂單編�
 		Status:    f.fromStatus,
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
-		OrderSteps: []domain.OrderStep{},
 	}
 	f.orderRepo.Save(order)
 	f.currentOrder = order
@@ -786,7 +690,7 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	ctx.Step(`^系統中存在一筆訂單 "([^"]*)"$`, feature.系統中存在一筆訂單)
 	ctx.Step(`^該訂單目前狀態為 "([^"]*)"$`, feature.該訂單目前狀態為)
 	ctx.Step(`^系統已啟用訂單狀態微服務，並連線到 RabbitMQ$`, feature.系統已啟用訂單狀態微服務並連線到RabbitMQ)
-	ctx.Step(`^系統會在每次狀態變更時自動新增一筆 OrderStep 記錄$`, feature.系統會在每次狀態變更時自動新增一筆OrderStep記錄)
+	// OrderStep 功能已移除
 	ctx.Step(`^系統會在每次狀態變更時發布一個訂單狀態變更事件$`, feature.系統會在每次狀態變更時發布一個訂單狀態變更事件)
 	ctx.Step(`^系統會在每次狀態變更時發布一個訂單狀態變更事件到 RabbitMQ$`, feature.系統會在每次狀態變更時發布一個訂單狀態變更事件到RabbitMQ)
 	ctx.Step(`^主後端服務會接收 RabbitMQ 中的訂單狀態變更事件並同步更新資料庫$`, feature.主後端服務會接收RabbitMQ中的訂單狀態變更事件並同步更新資料庫)
@@ -794,18 +698,17 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	ctx.Step(`^訂單 "([^"]*)" 狀態為 "([^"]*)"$`, feature.訂單狀態為)
 	ctx.Step(`^微服務收到一個 "([^"]*)" 事件，內容如下:$`, feature.微服務收到一個事件內容如下)
 	ctx.Step(`^訂單 "([^"]*)" 的狀態應該更新為 "([^"]*)"$`, feature.訂單的狀態應該更新為)
-	ctx.Step(`^應新增一筆 OrderStep 記錄:$`, feature.應新增一筆OrderStep記錄)
-	ctx.Step(`^應新增一筆 OrderStep 記錄，fromStatus 為 "([^"]*)"，toStatus 為 "([^"]*)"$`, feature.應新增一筆OrderStep記錄fromStatus為toStatus為)
+	// OrderStep 功能已移除
 	ctx.Step(`^應發布一個 "([^"]*)" 事件，內容包含:$`, feature.應發布一個事件內容包含)
 	ctx.Step(`^應發布一個 "([^"]*)" 事件，其內容 fromStatus 為 "([^"]*)"，toStatus 為 "([^"]*)"$`, feature.應發布一個事件其內容fromStatus為toStatus為)
 	ctx.Step(`^應發布一個 "([^"]*)" 事件到 RabbitMQ，其內容 fromStatus 為 "([^"]*)"，toStatus 為 "([^"]*)"$`, feature.應發布一個事件到RabbitMQ其內容fromStatus為toStatus為)
 	ctx.Step(`^主後端服務應該接收到該事件並同步更新訂單狀態$`, feature.主後端服務應該接收到該事件並同步更新訂單狀態)
-	ctx.Step(`^最終訂單 "([^"]*)" 的 OrderStep 記錄應該依順序包含以下轉換:$`, feature.最終訂單的OrderStep記錄應該依順序包含以下轉換)
+	// OrderStep 功能已移除
 
 	ctx.Step(`^微服務應該拒絕這次狀態變更$`, feature.微服務應該拒絕這次狀態變更)
 	ctx.Step(`^應記錄一筆錯誤日誌，內容包含 "([^"]*)"$`, feature.應記錄一筆錯誤日誌內容包含)
 	ctx.Step(`^訂單 "([^"]*)" 的狀態應該仍然為 "([^"]*)"$`, feature.訂單的狀態應該仍然為)
-	ctx.Step(`^不應新增任何新的 OrderStep 記錄$`, feature.不應新增任何新的OrderStep記錄)
+	// OrderStep 功能已移除
 	ctx.Step(`^不應發布任何新的 "([^"]*)" 事件$`, feature.不應發布任何新的事件)
 	ctx.Step(`^不應發布任何新的 "([^"]*)" 事件到 RabbitMQ$`, feature.不應發布任何新的事件到RabbitMQ)
 	
@@ -814,7 +717,7 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	ctx.Step(`^定時器開始運行，每 "([^"]*)" 秒檢查一次資料庫中的訂單狀態$`, feature.定時器開始運行每秒檢查一次資料庫中的訂單狀態)
 	ctx.Step(`^定時器使用隨機方式決定每筆訂單是否更新（50% 機率）$`, feature.定時器使用隨機方式決定每筆訂單是否更新機率)
 	ctx.Step(`^在下一次定時器執行時，部分訂單的狀態可能會更新為 "([^"]*)"$`, feature.在下一次定時器執行時部分訂單的狀態可能會更新為)
-	ctx.Step(`^如果訂單狀態更新，應新增一筆 OrderStep 記錄，fromStatus 為 "([^"]*)"，toStatus 為 "([^"]*)"$`, feature.如果訂單狀態更新應新增一筆OrderStep記錄fromStatus為toStatus為)
+	// OrderStep 功能已移除
 	ctx.Step(`^如果訂單狀態更新，應發布一個 "([^"]*)" 事件到 RabbitMQ，其內容 fromStatus 為 "([^"]*)"，toStatus 為 "([^"]*)"$`, feature.如果訂單狀態更新應發布一個事件到RabbitMQ其內容fromStatus為toStatus為)
 	ctx.Step(`^定時器執行，檢查 "([^"]*)" 狀態的訂單$`, feature.定時器執行檢查狀態的訂單)
 	ctx.Step(`^隨機決定更新訂單 "([^"]*)" 的狀態$`, feature.隨機決定更新訂單的狀態)
@@ -831,7 +734,7 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	ctx.Step(`^主後端服務的 OrderStatusChangedConsumer 應該接收到該消息$`, feature.主後端服務的OrderStatusChangedConsumer應該接收到該消息)
 	ctx.Step(`^主後端服務應該解析消息並調用 SyncOrderStatusFromStateServiceAsync$`, feature.主後端服務應該解析消息並調用SyncOrderStatusFromStateServiceAsync)
 	ctx.Step(`^主後端資料庫中訂單 "([^"]*)" 的狀態應該同步更新為 "([^"]*)"$`, feature.主後端資料庫中訂單的狀態應該同步更新為)
-	ctx.Step(`^主後端資料庫中應該新增對應的 OrderStep 記錄$`, feature.主後端資料庫中應該新增對應的OrderStep記錄)
+	// OrderStep 功能已移除
 
 	ctx.Step(`^MQ 中存在一筆尚未處理的 "([^"]*)" 事件，內容如下:$`, feature.MQ中存在一筆尚未處理的事件內容如下)
 	ctx.Step(`^微服務的排程器開始運行，並每 "([^"]*)" 秒檢查一次待處理事件$`, feature.微服務的排程器開始運行並每秒檢查一次待處理事件)
@@ -845,7 +748,7 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	// 處理 And 步驟
 	ctx.Step(`^And 該訂單目前狀態為 "([^"]*)"$`, feature.該訂單目前狀態為)
 	ctx.Step(`^And 系統已啟用訂單狀態微服務，並連線到 RabbitMQ$`, feature.系統已啟用訂單狀態微服務並連線到RabbitMQ)
-	ctx.Step(`^And 系統會在每次狀態變更時自動新增一筆 OrderStep 記錄$`, feature.系統會在每次狀態變更時自動新增一筆OrderStep記錄)
+	// OrderStep 功能已移除
 	ctx.Step(`^And 系統會在每次狀態變更時發布一個訂單狀態變更事件$`, feature.系統會在每次狀態變更時發布一個訂單狀態變更事件)
 	ctx.Step(`^And 系統會在每次狀態變更時發布一個訂單狀態變更事件到 RabbitMQ$`, feature.系統會在每次狀態變更時發布一個訂單狀態變更事件到RabbitMQ)
 	ctx.Step(`^And 主後端服務會接收 RabbitMQ 中的訂單狀態變更事件並同步更新資料庫$`, feature.主後端服務會接收RabbitMQ中的訂單狀態變更事件並同步更新資料庫)
@@ -856,7 +759,7 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	ctx.Step(`^And 定時器開始運行，每 "([^"]*)" 秒檢查一次資料庫中的訂單狀態$`, feature.定時器開始運行每秒檢查一次資料庫中的訂單狀態)
 	ctx.Step(`^And 定時器使用隨機方式決定每筆訂單是否更新（50% 機率）$`, feature.定時器使用隨機方式決定每筆訂單是否更新機率)
 	ctx.Step(`^And 在下一次定時器執行時，部分訂單的狀態可能會更新為 "([^"]*)"$`, feature.在下一次定時器執行時部分訂單的狀態可能會更新為)
-	ctx.Step(`^And 如果訂單狀態更新，應新增一筆 OrderStep 記錄，fromStatus 為 "([^"]*)"，toStatus 為 "([^"]*)"$`, feature.如果訂單狀態更新應新增一筆OrderStep記錄fromStatus為toStatus為)
+	// OrderStep 功能已移除
 	ctx.Step(`^And 如果訂單狀態更新，應發布一個 "([^"]*)" 事件到 RabbitMQ，其內容 fromStatus 為 "([^"]*)"，toStatus 為 "([^"]*)"$`, feature.如果訂單狀態更新應發布一個事件到RabbitMQ其內容fromStatus為toStatus為)
 	ctx.Step(`^And 定時器執行，檢查 "([^"]*)" 狀態的訂單$`, feature.定時器執行檢查狀態的訂單)
 	ctx.Step(`^And 隨機決定更新訂單 "([^"]*)" 的狀態$`, feature.隨機決定更新訂單的狀態)
@@ -865,12 +768,12 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	ctx.Step(`^And 在下一次定時器執行時，未更新的訂單仍有機會被更新$`, feature.在下一次定時器執行時未更新的訂單仍有機會被更新)
 	ctx.Step(`^And 每次狀態更新都會發布 "([^"]*)" 事件到 RabbitMQ$`, feature.每次狀態更新都會發布事件到RabbitMQ)
 	ctx.Step(`^And 主後端服務應該接收到所有更新事件並同步更新對應的訂單狀態$`, feature.主後端服務應該接收到所有更新事件並同步更新對應的訂單狀態)
-	ctx.Step(`^And 應新增一筆 OrderStep 記錄，fromStatus 為 "([^"]*)"，toStatus 為 "([^"]*)"$`, feature.應新增一筆OrderStep記錄fromStatus為toStatus為)
+	// OrderStep 功能已移除
 	ctx.Step(`^And 應發布一個 "([^"]*)" 事件，其內容 fromStatus 為 "([^"]*)"，toStatus 為 "([^"]*)"$`, feature.應發布一個事件其內容fromStatus為toStatus為)
-	ctx.Step(`^And 最終訂單 "([^"]*)" 的 OrderStep 記錄應該依順序包含以下轉換:$`, feature.最終訂單的OrderStep記錄應該依順序包含以下轉換)
+	// OrderStep 功能已移除
 	ctx.Step(`^And 應記錄一筆錯誤日誌，內容包含 "([^"]*)"$`, feature.應記錄一筆錯誤日誌內容包含)
 	ctx.Step(`^And 訂單 "([^"]*)" 的狀態應該仍然為 "([^"]*)"$`, feature.訂單的狀態應該仍然為)
-	ctx.Step(`^And 不應新增任何新的 OrderStep 記錄$`, feature.不應新增任何新的OrderStep記錄)
+	// OrderStep 功能已移除
 	ctx.Step(`^And 不應發布任何新的 "([^"]*)" 事件$`, feature.不應發布任何新的事件)
 	ctx.Step(`^And 在下一次排程執行時，該 "([^"]*)" 事件應被取出並處理$`, feature.在下一次排程執行時該事件應被取出並處理)
 	ctx.Step(`^And 在事件成功處理之後，該訊息不應再次被處理$`, feature.在事件成功處理之後該訊息不應再次被處理)

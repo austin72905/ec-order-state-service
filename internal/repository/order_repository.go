@@ -9,27 +9,21 @@ import (
 type OrderRepository interface {
 	GetByID(orderID string) (*domain.Order, error)
 	Save(order *domain.Order) error
-	AddOrderStep(step *domain.OrderStep) error
-	GetOrderSteps(orderID string) ([]domain.OrderStep, error)
 	GetOrdersByStatus(status domain.OrderStatus, limit, offset int) ([]*domain.Order, error)
 	// BatchUpdateOrderStatus 批量更新訂單狀態
 	BatchUpdateOrderStatus(orderIDs []string, newStatus domain.OrderStatus, fromStatus domain.OrderStatus) error
-	// BatchAddOrderSteps 批量添加訂單步驟
-	BatchAddOrderSteps(steps []*domain.OrderStep) error
 }
 
 // InMemoryOrderRepository 記憶體實作的訂單倉儲（用於測試）
 type InMemoryOrderRepository struct {
-	orders     map[string]*domain.Order
-	orderSteps map[string][]domain.OrderStep
-	mu         sync.RWMutex
+	orders map[string]*domain.Order
+	mu     sync.RWMutex
 }
 
 // NewInMemoryOrderRepository 創建記憶體倉儲
 func NewInMemoryOrderRepository() *InMemoryOrderRepository {
 	return &InMemoryOrderRepository{
-		orders:     make(map[string]*domain.Order),
-		orderSteps: make(map[string][]domain.OrderStep),
+		orders: make(map[string]*domain.Order),
 	}
 }
 
@@ -45,7 +39,6 @@ func (r *InMemoryOrderRepository) GetByID(orderID string) (*domain.Order, error)
 
 	// 複製訂單以避免外部修改
 	orderCopy := *order
-	orderCopy.OrderSteps = r.orderSteps[orderID]
 	return &orderCopy, nil
 }
 
@@ -56,45 +49,9 @@ func (r *InMemoryOrderRepository) Save(order *domain.Order) error {
 
 	// 深拷貝訂單
 	orderCopy := *order
-	orderCopy.OrderSteps = make([]domain.OrderStep, len(order.OrderSteps))
-	copy(orderCopy.OrderSteps, order.OrderSteps)
-
 	r.orders[order.ID] = &orderCopy
-	r.orderSteps[order.ID] = make([]domain.OrderStep, len(order.OrderSteps))
-	copy(r.orderSteps[order.ID], order.OrderSteps)
 
 	return nil
-}
-
-// AddOrderStep 添加訂單步驟
-func (r *InMemoryOrderRepository) AddOrderStep(step *domain.OrderStep) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	if r.orderSteps[step.OrderID] == nil {
-		r.orderSteps[step.OrderID] = make([]domain.OrderStep, 0)
-	}
-
-	stepCopy := *step
-	r.orderSteps[step.OrderID] = append(r.orderSteps[step.OrderID], stepCopy)
-
-	return nil
-}
-
-// GetOrderSteps 獲取訂單步驟列表
-func (r *InMemoryOrderRepository) GetOrderSteps(orderID string) ([]domain.OrderStep, error) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	steps, exists := r.orderSteps[orderID]
-	if !exists {
-		return []domain.OrderStep{}, nil
-	}
-
-	// 返回副本
-	result := make([]domain.OrderStep, len(steps))
-	copy(result, steps)
-	return result, nil
 }
 
 // GetOrdersByStatus 根據狀態獲取訂單列表（支持分頁）
@@ -107,8 +64,6 @@ func (r *InMemoryOrderRepository) GetOrdersByStatus(status domain.OrderStatus, l
 		if order.Status == status {
 			// 複製訂單以避免外部修改
 			orderCopy := *order
-			orderCopy.OrderSteps = make([]domain.OrderStep, len(r.orderSteps[order.ID]))
-			copy(orderCopy.OrderSteps, r.orderSteps[order.ID])
 			orders = append(orders, &orderCopy)
 		}
 	}
@@ -141,22 +96,6 @@ func (r *InMemoryOrderRepository) BatchUpdateOrderStatus(orderIDs []string, newS
 		if exists && order.Status == fromStatus {
 			order.Status = newStatus
 		}
-	}
-
-	return nil
-}
-
-// BatchAddOrderSteps 批量添加訂單步驟（記憶體實作）
-func (r *InMemoryOrderRepository) BatchAddOrderSteps(steps []*domain.OrderStep) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	for _, step := range steps {
-		if r.orderSteps[step.OrderID] == nil {
-			r.orderSteps[step.OrderID] = make([]domain.OrderStep, 0)
-		}
-		stepCopy := *step
-		r.orderSteps[step.OrderID] = append(r.orderSteps[step.OrderID], stepCopy)
 	}
 
 	return nil

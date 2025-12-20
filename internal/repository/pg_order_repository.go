@@ -17,12 +17,9 @@ type Queries interface {
 	GetOrderByIDForUpdate(ctx context.Context, id string) (Order, error)
 	CreateOrder(ctx context.Context, arg CreateOrderParams) (Order, error)
 	UpdateOrderStatus(ctx context.Context, arg UpdateOrderStatusParams) (Order, error)
-	GetOrderSteps(ctx context.Context, orderID string) ([]OrderStep, error)
-	AddOrderStep(ctx context.Context, arg AddOrderStepParams) (OrderStep, error)
 	GetOrdersByStatus(ctx context.Context, status string) ([]Order, error)
-	GetOrdersByStatusWithSteps(ctx context.Context, status string, limit, offset int) ([]*domain.Order, error)
+	GetOrdersByStatusWithPagination(ctx context.Context, status string, limit, offset int) ([]Order, error)
 	BatchUpdateOrderStatus(ctx context.Context, orderIDs []string, newStatus, fromStatus string) error
-	BatchAddOrderSteps(ctx context.Context, steps []*domain.OrderStep) error
 }
 
 // Order 資料庫模型（對應 sqlc 生成的 Order）
@@ -31,15 +28,6 @@ type Order struct {
 	Status    string
 	CreatedAt time.Time
 	UpdatedAt time.Time
-}
-
-// OrderStep 資料庫模型（對應 sqlc 生成的 OrderStep）
-type OrderStep struct {
-	ID         int64
-	OrderID    string
-	FromStatus string
-	ToStatus   string
-	CreatedAt  time.Time
 }
 
 // CreateOrderParams 建立訂單參數
@@ -54,14 +42,6 @@ type CreateOrderParams struct {
 type UpdateOrderStatusParams struct {
 	ID     string
 	Status string
-}
-
-// AddOrderStepParams 添加訂單步驟參數
-type AddOrderStepParams struct {
-	OrderID    string
-	FromStatus string
-	ToStatus   string
-	CreatedAt  time.Time
 }
 
 // PgOrderRepository PostgreSQL 實作的訂單倉儲
@@ -111,13 +91,7 @@ func (r *PgOrderRepository) GetByID(orderID string) (*domain.Order, error) {
 		return nil, fmt.Errorf("查詢訂單失敗: %w", err)
 	}
 
-	// 獲取訂單步驟
-	steps, err := r.queries.GetOrderSteps(ctx, orderID)
-	if err != nil {
-		return nil, fmt.Errorf("查詢訂單步驟失敗: %w", err)
-	}
-
-	return toDomainOrder(dbOrder, steps), nil
+	return toDomainOrder(dbOrder), nil
 }
 
 // Save 保存訂單（使用事務保護）
@@ -173,29 +147,6 @@ func (r *PgOrderRepository) Save(order *domain.Order) error {
 				}
 			}
 
-			// 保存訂單步驟（只保存新的步驟）
-			existingSteps, err := txQueries.GetOrderSteps(ctx, order.ID)
-			if err != nil {
-				return fmt.Errorf("查詢訂單步驟失敗: %w", err)
-			}
-
-			existingStepCount := len(existingSteps)
-			if len(order.OrderSteps) > existingStepCount {
-				// 添加新的步驟
-				for i := existingStepCount; i < len(order.OrderSteps); i++ {
-					step := order.OrderSteps[i]
-					_, err = txQueries.AddOrderStep(ctx, AddOrderStepParams{
-						OrderID:    step.OrderID,
-						FromStatus: string(step.FromStatus),
-						ToStatus:   string(step.ToStatus),
-						CreatedAt:  step.CreatedAt,
-					})
-					if err != nil {
-						return fmt.Errorf("添加訂單步驟失敗: %w", err)
-					}
-				}
-			}
-
 			return nil
 		})
 
@@ -225,55 +176,28 @@ func isDeadlockError(err error) bool {
 	return strings.Contains(errStr, "deadlock") || strings.Contains(errStr, "40001")
 }
 
-// AddOrderStep 添加訂單步驟
-func (r *PgOrderRepository) AddOrderStep(step *domain.OrderStep) error {
-	ctx, cancel := context.WithTimeout(context.Background(), r.writeTimeout)
-	defer cancel()
-
-	_, err := r.queries.AddOrderStep(ctx, AddOrderStepParams{
-		OrderID:    step.OrderID,
-		FromStatus: string(step.FromStatus),
-		ToStatus:   string(step.ToStatus),
-		CreatedAt:  step.CreatedAt,
-	})
-	if err != nil {
-		return fmt.Errorf("添加訂單步驟失敗: %w", err)
-	}
-
-	return nil
-}
-
-// GetOrderSteps 獲取訂單步驟列表
-func (r *PgOrderRepository) GetOrderSteps(orderID string) ([]domain.OrderStep, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), r.queryTimeout)
-	defer cancel()
-
-	dbSteps, err := r.queries.GetOrderSteps(ctx, orderID)
-	if err != nil {
-		return nil, fmt.Errorf("查詢訂單步驟失敗: %w", err)
-	}
-
-	steps := make([]domain.OrderStep, len(dbSteps))
-	for i, dbStep := range dbSteps {
-		steps[i] = toDomainOrderStep(dbStep)
-	}
-
-	return steps, nil
-}
-
 // GetOrdersByStatus 根據狀態獲取訂單列表（支持分頁）
 func (r *PgOrderRepository) GetOrdersByStatus(status domain.OrderStatus, limit, offset int) ([]*domain.Order, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), r.queryTimeout)
 	defer cancel()
 
-	// 使用批量查詢方法避免 N+1 問題
+	// 使用批量查詢方法
 	if limit <= 0 {
 		limit = 100 // 預設限制
 	}
 	if offset < 0 {
 		offset = 0
 	}
-	return r.queries.GetOrdersByStatusWithSteps(ctx, string(status), limit, offset)
+	dbOrders, err := r.queries.GetOrdersByStatusWithPagination(ctx, string(status), limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("查詢訂單失敗: %w", err)
+	}
+
+	orders := make([]*domain.Order, len(dbOrders))
+	for i, dbOrder := range dbOrders {
+		orders[i] = toDomainOrder(dbOrder)
+	}
+	return orders, nil
 }
 
 // BatchUpdateOrderStatus 批量更新訂單狀態
@@ -288,43 +212,13 @@ func (r *PgOrderRepository) BatchUpdateOrderStatus(orderIDs []string, newStatus 
 	return r.queries.BatchUpdateOrderStatus(ctx, orderIDs, string(newStatus), string(fromStatus))
 }
 
-// BatchAddOrderSteps 批量添加訂單步驟
-func (r *PgOrderRepository) BatchAddOrderSteps(steps []*domain.OrderStep) error {
-	if len(steps) == 0 {
-		return nil
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), r.writeTimeout)
-	defer cancel()
-
-	return r.queries.BatchAddOrderSteps(ctx, steps)
-}
-
 // toDomainOrder 將資料庫模型轉換為領域模型
-func toDomainOrder(dbOrder Order, dbSteps []OrderStep) *domain.Order {
-	order := &domain.Order{
+func toDomainOrder(dbOrder Order) *domain.Order {
+	return &domain.Order{
 		ID:        dbOrder.ID,
 		Status:    domain.OrderStatus(dbOrder.Status),
 		CreatedAt: dbOrder.CreatedAt,
 		UpdatedAt: dbOrder.UpdatedAt,
-		OrderSteps: make([]domain.OrderStep, len(dbSteps)),
-	}
-
-	for i, dbStep := range dbSteps {
-		order.OrderSteps[i] = toDomainOrderStep(dbStep)
-	}
-
-	return order
-}
-
-// toDomainOrderStep 將資料庫模型轉換為領域模型
-func toDomainOrderStep(dbStep OrderStep) domain.OrderStep {
-	return domain.OrderStep{
-		ID:         dbStep.ID,
-		OrderID:    dbStep.OrderID,
-		FromStatus: domain.OrderStatus(dbStep.FromStatus),
-		ToStatus:   domain.OrderStatus(dbStep.ToStatus),
-		CreatedAt:  dbStep.CreatedAt,
 	}
 }
 

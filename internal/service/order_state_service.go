@@ -95,8 +95,6 @@ func (s *OrderStateService) HandlePaymentCompleted(event domain.PaymentCompleted
 			CreatedAt: now,
 			UpdatedAt: now,
 		}
-		// 添加狀態轉換步驟
-		newOrder.AddOrderStep(domain.StatusCreated, domain.StatusWaitingForShipment)
 		
 		if err := s.orderRepo.Save(newOrder); err != nil {
 			// 檢查是否為重複創建錯誤（可能由並發導致）
@@ -274,10 +272,6 @@ func (s *OrderStateService) GetOrder(orderID string) (*domain.Order, error) {
 	return s.orderRepo.GetByID(orderID)
 }
 
-// GetOrderSteps 獲取訂單步驟
-func (s *OrderStateService) GetOrderSteps(orderID string) ([]domain.OrderStep, error) {
-	return s.orderRepo.GetOrderSteps(orderID)
-}
 
 // CheckStatusTransition 檢查狀態轉換是否允許
 func (s *OrderStateService) CheckStatusTransition(fromStatus, toStatus domain.OrderStatus) bool {
@@ -327,22 +321,6 @@ func (s *OrderStateService) BatchUpdateOrderStatus(orderIDs []string, fromStatus
 		return err
 	}
 
-	// 批量添加訂單步驟
-	now := time.Now()
-	steps := make([]*domain.OrderStep, 0, len(orderIDs))
-	for _, orderID := range orderIDs {
-		steps = append(steps, &domain.OrderStep{
-			OrderID:    orderID,
-			FromStatus: fromStatus,
-			ToStatus:   toStatus,
-			CreatedAt:  now,
-		})
-	}
-
-	if err := s.orderRepo.BatchAddOrderSteps(steps); err != nil {
-		s.logger.Error("批量添加訂單步驟失敗", err, "stepCount", len(steps))
-		// 步驟添加失敗不影響主流程，只記錄日誌
-	}
 
 	// 批量發布狀態變更事件（異步處理，不阻塞主流程）
 	for _, orderID := range orderIDs {

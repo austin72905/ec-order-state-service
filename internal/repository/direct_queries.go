@@ -2,10 +2,7 @@ package repository
 
 import (
 	"context"
-	"database/sql"
-	"ec-order-state-service/internal/domain"
 	"fmt"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -101,54 +98,7 @@ func (q *directQueries) UpdateOrderStatus(ctx context.Context, arg UpdateOrderSt
 	return order, nil
 }
 
-// GetOrderSteps 獲取訂單步驟列表
-func (q *directQueries) GetOrderSteps(ctx context.Context, orderID string) ([]OrderStep, error) {
-	executor := q.getQueryExecutor(ctx)
-	rows, err := executor.Query(ctx, `
-		SELECT id, order_id, from_status, to_status, created_at
-		FROM order_steps
-		WHERE order_id = $1
-		ORDER BY created_at ASC
-	`, orderID)
-	if err != nil {
-		return nil, fmt.Errorf("查詢訂單步驟失敗: %w", err)
-	}
-	defer rows.Close()
-
-	var steps []OrderStep
-	for rows.Next() {
-		var step OrderStep
-		if err := rows.Scan(&step.ID, &step.OrderID, &step.FromStatus, &step.ToStatus, &step.CreatedAt); err != nil {
-			return nil, fmt.Errorf("掃描訂單步驟失敗: %w", err)
-		}
-		steps = append(steps, step)
-	}
-
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("讀取訂單步驟失敗: %w", err)
-	}
-
-	return steps, nil
-}
-
-// AddOrderStep 添加訂單步驟
-func (q *directQueries) AddOrderStep(ctx context.Context, arg AddOrderStepParams) (OrderStep, error) {
-	var step OrderStep
-	executor := q.getQueryExecutor(ctx)
-	err := executor.QueryRow(ctx, `
-		INSERT INTO order_steps (order_id, from_status, to_status, created_at)
-		VALUES ($1, $2, $3, $4)
-		RETURNING id, order_id, from_status, to_status, created_at
-	`, arg.OrderID, arg.FromStatus, arg.ToStatus, arg.CreatedAt).Scan(
-		&step.ID, &step.OrderID, &step.FromStatus, &step.ToStatus, &step.CreatedAt,
-	)
-	if err != nil {
-		return OrderStep{}, fmt.Errorf("添加訂單步驟失敗: %w", err)
-	}
-	return step, nil
-}
-
-// GetOrdersByStatus 根據狀態獲取訂單列表（不包含步驟，用於向後兼容）
+// GetOrdersByStatus 根據狀態獲取訂單列表
 func (q *directQueries) GetOrdersByStatus(ctx context.Context, status string) ([]Order, error) {
 	executor := q.getQueryExecutor(ctx)
 	rows, err := executor.Query(ctx, `
@@ -178,19 +128,14 @@ func (q *directQueries) GetOrdersByStatus(ctx context.Context, status string) ([
 	return orders, nil
 }
 
-// GetOrdersByStatusWithSteps 根據狀態獲取訂單列表（包含步驟，避免 N+1 查詢）
-// 支持分頁查詢
-func (q *directQueries) GetOrdersByStatusWithSteps(ctx context.Context, status string, limit, offset int) ([]*domain.Order, error) {
-	// 使用 LEFT JOIN 一次性獲取訂單和步驟
+// GetOrdersByStatusWithPagination 根據狀態獲取訂單列表（支持分頁）
+func (q *directQueries) GetOrdersByStatusWithPagination(ctx context.Context, status string, limit, offset int) ([]Order, error) {
 	executor := q.getQueryExecutor(ctx)
 	rows, err := executor.Query(ctx, `
-		SELECT 
-			o.id, o.status, o.created_at, o.updated_at,
-			os.id as step_id, os.order_id, os.from_status, os.to_status, os.created_at as step_created_at
-		FROM orders o
-		LEFT JOIN order_steps os ON o.id = os.order_id
-		WHERE o.status = $1
-		ORDER BY o.updated_at ASC, os.created_at ASC
+		SELECT id, status, created_at, updated_at
+		FROM orders
+		WHERE status = $1
+		ORDER BY updated_at ASC
 		LIMIT $2 OFFSET $3
 	`, status, limit, offset)
 	if err != nil {
@@ -198,56 +143,17 @@ func (q *directQueries) GetOrdersByStatusWithSteps(ctx context.Context, status s
 	}
 	defer rows.Close()
 
-	// 使用 map 來組織訂單和步驟
-	orderMap := make(map[string]*domain.Order)
-	
+	var orders []Order
 	for rows.Next() {
-		var orderID, orderStatus string
-		var orderCreatedAt, orderUpdatedAt time.Time
-		var stepID sql.NullInt64
-		var stepOrderID sql.NullString
-		var stepFromStatus, stepToStatus sql.NullString
-		var stepCreatedAt sql.NullTime
-
-		err := rows.Scan(
-			&orderID, &orderStatus, &orderCreatedAt, &orderUpdatedAt,
-			&stepID, &stepOrderID, &stepFromStatus, &stepToStatus, &stepCreatedAt,
-		)
-		if err != nil {
+		var order Order
+		if err := rows.Scan(&order.ID, &order.Status, &order.CreatedAt, &order.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("掃描訂單失敗: %w", err)
 		}
-
-		// 如果訂單不存在於 map 中，創建新訂單
-		if _, exists := orderMap[orderID]; !exists {
-			orderMap[orderID] = &domain.Order{
-				ID:        orderID,
-				Status:    domain.OrderStatus(orderStatus),
-				CreatedAt: orderCreatedAt,
-				UpdatedAt: orderUpdatedAt,
-				OrderSteps: []domain.OrderStep{},
-			}
-		}
-
-		// 如果有步驟數據，添加到訂單的步驟列表中
-		if stepID.Valid {
-			orderMap[orderID].OrderSteps = append(orderMap[orderID].OrderSteps, domain.OrderStep{
-				ID:         stepID.Int64,
-				OrderID:    stepOrderID.String,
-				FromStatus: domain.OrderStatus(stepFromStatus.String),
-				ToStatus:   domain.OrderStatus(stepToStatus.String),
-				CreatedAt:  stepCreatedAt.Time,
-			})
-		}
+		orders = append(orders, order)
 	}
 
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("讀取訂單失敗: %w", err)
-	}
-
-	// 將 map 轉換為 slice
-	orders := make([]*domain.Order, 0, len(orderMap))
-	for _, order := range orderMap {
-		orders = append(orders, order)
 	}
 
 	return orders, nil
@@ -271,51 +177,6 @@ func (q *directQueries) BatchUpdateOrderStatus(ctx context.Context, orderIDs []s
 	
 	if err != nil {
 		return fmt.Errorf("批量更新訂單狀態失敗: %w", err)
-	}
-	
-	return nil
-}
-
-// BatchAddOrderSteps 批量添加訂單步驟
-func (q *directQueries) BatchAddOrderSteps(ctx context.Context, steps []*domain.OrderStep) error {
-	if len(steps) == 0 {
-		return nil
-	}
-
-	// 使用 pgx Batch 進行批量插入
-	batch := &pgx.Batch{}
-	for _, step := range steps {
-		batch.Queue(`
-			INSERT INTO order_steps (order_id, from_status, to_status, created_at)
-			VALUES ($1, $2, $3, $4)
-		`, step.OrderID, string(step.FromStatus), string(step.ToStatus), step.CreatedAt)
-	}
-	
-	// 執行批量操作
-	if q.tx != nil {
-		results := q.tx.SendBatch(ctx, batch)
-		defer results.Close()
-		
-		for i := 0; i < len(steps); i++ {
-			_, err := results.Exec()
-			if err != nil {
-				return fmt.Errorf("批量插入訂單步驟失敗 (第 %d 個): %w", i+1, err)
-			}
-		}
-	} else {
-		// 如果沒有事務，需要開啟一個事務來執行批量操作
-		return pgx.BeginTxFunc(ctx, q.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
-			results := tx.SendBatch(ctx, batch)
-			defer results.Close()
-			
-			for i := 0; i < len(steps); i++ {
-				_, err := results.Exec()
-				if err != nil {
-					return fmt.Errorf("批量插入訂單步驟失敗 (第 %d 個): %w", i+1, err)
-				}
-			}
-			return nil
-		})
 	}
 	
 	return nil

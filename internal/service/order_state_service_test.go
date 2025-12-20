@@ -11,14 +11,12 @@ import (
 
 // TestOrderRepository 測試用的訂單倉儲
 type TestOrderRepository struct {
-	orders     map[string]*domain.Order
-	orderSteps map[string][]domain.OrderStep
+	orders map[string]*domain.Order
 }
 
 func NewTestOrderRepository() *TestOrderRepository {
 	return &TestOrderRepository{
-		orders:     make(map[string]*domain.Order),
-		orderSteps: make(map[string][]domain.OrderStep),
+		orders: make(map[string]*domain.Order),
 	}
 }
 
@@ -28,37 +26,13 @@ func (r *TestOrderRepository) GetByID(orderID string) (*domain.Order, error) {
 		return nil, repository.ErrOrderNotFound{OrderID: orderID}
 	}
 	orderCopy := *order
-	orderCopy.OrderSteps = r.orderSteps[orderID]
 	return &orderCopy, nil
 }
 
 func (r *TestOrderRepository) Save(order *domain.Order) error {
 	orderCopy := *order
-	orderCopy.OrderSteps = make([]domain.OrderStep, len(order.OrderSteps))
-	copy(orderCopy.OrderSteps, order.OrderSteps)
 	r.orders[order.ID] = &orderCopy
-	r.orderSteps[order.ID] = make([]domain.OrderStep, len(order.OrderSteps))
-	copy(r.orderSteps[order.ID], order.OrderSteps)
 	return nil
-}
-
-func (r *TestOrderRepository) AddOrderStep(step *domain.OrderStep) error {
-	if r.orderSteps[step.OrderID] == nil {
-		r.orderSteps[step.OrderID] = make([]domain.OrderStep, 0)
-	}
-	stepCopy := *step
-	r.orderSteps[step.OrderID] = append(r.orderSteps[step.OrderID], stepCopy)
-	return nil
-}
-
-func (r *TestOrderRepository) GetOrderSteps(orderID string) ([]domain.OrderStep, error) {
-	steps, exists := r.orderSteps[orderID]
-	if !exists {
-		return []domain.OrderStep{}, nil
-	}
-	result := make([]domain.OrderStep, len(steps))
-	copy(result, steps)
-	return result, nil
 }
 
 func (r *TestOrderRepository) GetOrdersByStatus(status domain.OrderStatus, limit, offset int) ([]*domain.Order, error) {
@@ -66,8 +40,6 @@ func (r *TestOrderRepository) GetOrdersByStatus(status domain.OrderStatus, limit
 	for _, order := range r.orders {
 		if order.Status == status {
 			orderCopy := *order
-			orderCopy.OrderSteps = make([]domain.OrderStep, len(r.orderSteps[order.ID]))
-			copy(orderCopy.OrderSteps, r.orderSteps[order.ID])
 			orders = append(orders, &orderCopy)
 		}
 	}
@@ -103,17 +75,6 @@ func (r *TestOrderRepository) BatchUpdateOrderStatus(orderIDs []string, newStatu
 	return nil
 }
 
-// BatchAddOrderSteps 測試用批次新增步驟（簡化版）
-func (r *TestOrderRepository) BatchAddOrderSteps(steps []*domain.OrderStep) error {
-	for _, step := range steps {
-		if r.orderSteps[step.OrderID] == nil {
-			r.orderSteps[step.OrderID] = make([]domain.OrderStep, 0)
-		}
-		stepCopy := *step
-		r.orderSteps[step.OrderID] = append(r.orderSteps[step.OrderID], stepCopy)
-	}
-	return nil
-}
 
 func TestOrderStateService_HandlePaymentCompleted(t *testing.T) {
 	t.Run("訂單不存在時應該創建新訂單", func(t *testing.T) {
@@ -134,7 +95,6 @@ func TestOrderStateService_HandlePaymentCompleted(t *testing.T) {
 		order, err := testRepo.GetByID(orderID)
 		assert.NoError(t, err)
 		assert.Equal(t, domain.StatusWaitingForShipment, order.Status)
-		assert.Len(t, order.OrderSteps, 1)
 	})
 
 	t.Run("訂單已存在且狀態為 Created 時應該更新為 WaitingForShipment", func(t *testing.T) {
@@ -152,7 +112,6 @@ func TestOrderStateService_HandlePaymentCompleted(t *testing.T) {
 			Status:    domain.StatusCreated,
 			CreatedAt: time.Now(),
 			UpdatedAt: time.Now(),
-			OrderSteps: []domain.OrderStep{},
 		}
 		testRepo.Save(order)
 
@@ -185,7 +144,6 @@ func TestOrderStateService_HandlePaymentCompleted(t *testing.T) {
 			Status:    domain.StatusWaitingForShipment,
 			CreatedAt: time.Now(),
 			UpdatedAt: time.Now(),
-			OrderSteps: []domain.OrderStep{},
 		}
 		testRepo.Save(order)
 		initialEventCount := len(mockPublisher.GetPublishedEvents())
@@ -216,7 +174,6 @@ func TestOrderStateService_UpdateOrderStatus(t *testing.T) {
 			Status:    domain.StatusWaitingForShipment,
 			CreatedAt: time.Now(),
 			UpdatedAt: time.Now(),
-			OrderSteps: []domain.OrderStep{},
 		}
 		testRepo.Save(order)
 
@@ -247,7 +204,6 @@ func TestOrderStateService_UpdateOrderStatus(t *testing.T) {
 			Status:    domain.StatusCompleted,
 			CreatedAt: time.Now(),
 			UpdatedAt: time.Now(),
-			OrderSteps: []domain.OrderStep{},
 		}
 		testRepo.Save(order)
 		mockLogger.Clear()
@@ -398,7 +354,6 @@ func TestOrderStateService_HandleShipmentStarted(t *testing.T) {
 			Status:    domain.StatusWaitingForShipment,
 			CreatedAt: time.Now(),
 			UpdatedAt: time.Now(),
-			OrderSteps: []domain.OrderStep{},
 		}
 		testRepo.Save(order)
 
@@ -431,7 +386,6 @@ func TestOrderStateService_HandlePackageArrivedAtPickupStore(t *testing.T) {
 			Status:    domain.StatusInTransit,
 			CreatedAt: time.Now(),
 			UpdatedAt: time.Now(),
-			OrderSteps: []domain.OrderStep{},
 		}
 		testRepo.Save(order)
 
@@ -464,7 +418,6 @@ func TestOrderStateService_HandlePackagePickedUp(t *testing.T) {
 			Status:    domain.StatusWaitPickup,
 			CreatedAt: time.Now(),
 			UpdatedAt: time.Now(),
-			OrderSteps: []domain.OrderStep{},
 		}
 		testRepo.Save(order)
 
