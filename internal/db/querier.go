@@ -9,10 +9,15 @@ import (
 )
 
 type Querier interface {
-	AddOrderStep(ctx context.Context, arg AddOrderStepParams) (OrderStep, error)
+	// 批量更新訂單狀態（使用 PostgreSQL 的 ANY 操作符）
+	// 只更新狀態為 fromStatus 的訂單，確保冪等性
+	BatchUpdateOrderStatus(ctx context.Context, arg BatchUpdateOrderStatusParams) error
 	CreateOrder(ctx context.Context, arg CreateOrderParams) (Order, error)
 	GetOrderByID(ctx context.Context, id string) (Order, error)
-	GetOrderSteps(ctx context.Context, orderID string) ([]OrderStep, error)
+	// 使用悲觀鎖 SELECT FOR UPDATE NOWAIT 避免長時間等待鎖
+	GetOrderByIDForUpdate(ctx context.Context, id string) (Order, error)
+	// 根據狀態獲取訂單列表（支持分頁）
+	GetOrdersByStatusWithPagination(ctx context.Context, arg GetOrdersByStatusWithPaginationParams) ([]Order, error)
 	// 注意：updated_at 由資料庫 trigger 自動更新，無需手動設置
 	UpdateOrderStatus(ctx context.Context, arg UpdateOrderStatusParams) (Order, error)
 }

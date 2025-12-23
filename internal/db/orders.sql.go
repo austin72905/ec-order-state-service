@@ -11,40 +11,23 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const addOrderStep = `-- name: AddOrderStep :one
-INSERT INTO order_steps (
-    order_id,
-    from_status,
-    to_status,
-    created_at
-) VALUES (
-    $1, $2, $3, $4
-) RETURNING id, order_id, from_status, to_status, created_at
+const batchUpdateOrderStatus = `-- name: BatchUpdateOrderStatus :exec
+UPDATE orders
+SET status = $1
+WHERE id = ANY($2::text[]) AND status = $3
 `
 
-type AddOrderStepParams struct {
-	OrderID    string           `json:"order_id"`
-	FromStatus string           `json:"from_status"`
-	ToStatus   string           `json:"to_status"`
-	CreatedAt  pgtype.Timestamp `json:"created_at"`
+type BatchUpdateOrderStatusParams struct {
+	Status   string   `json:"status"`
+	Column2  []string `json:"column_2"`
+	Status_2 string   `json:"status_2"`
 }
 
-func (q *Queries) AddOrderStep(ctx context.Context, arg AddOrderStepParams) (OrderStep, error) {
-	row := q.db.QueryRow(ctx, addOrderStep,
-		arg.OrderID,
-		arg.FromStatus,
-		arg.ToStatus,
-		arg.CreatedAt,
-	)
-	var i OrderStep
-	err := row.Scan(
-		&i.ID,
-		&i.OrderID,
-		&i.FromStatus,
-		&i.ToStatus,
-		&i.CreatedAt,
-	)
-	return i, err
+// 批量更新訂單狀態（使用 PostgreSQL 的 ANY 操作符）
+// 只更新狀態為 fromStatus 的訂單，確保冪等性
+func (q *Queries) BatchUpdateOrderStatus(ctx context.Context, arg BatchUpdateOrderStatusParams) error {
+	_, err := q.db.Exec(ctx, batchUpdateOrderStatus, arg.Status, arg.Column2, arg.Status_2)
+	return err
 }
 
 const createOrder = `-- name: CreateOrder :one
@@ -99,27 +82,54 @@ func (q *Queries) GetOrderByID(ctx context.Context, id string) (Order, error) {
 	return i, err
 }
 
-const getOrderSteps = `-- name: GetOrderSteps :many
-SELECT id, order_id, from_status, to_status, created_at FROM order_steps
-WHERE order_id = $1
-ORDER BY created_at ASC
+const getOrderByIDForUpdate = `-- name: GetOrderByIDForUpdate :one
+SELECT id, status, created_at, updated_at FROM orders
+WHERE id = $1
+FOR UPDATE NOWAIT
+LIMIT 1
 `
 
-func (q *Queries) GetOrderSteps(ctx context.Context, orderID string) ([]OrderStep, error) {
-	rows, err := q.db.Query(ctx, getOrderSteps, orderID)
+// 使用悲觀鎖 SELECT FOR UPDATE NOWAIT 避免長時間等待鎖
+func (q *Queries) GetOrderByIDForUpdate(ctx context.Context, id string) (Order, error) {
+	row := q.db.QueryRow(ctx, getOrderByIDForUpdate, id)
+	var i Order
+	err := row.Scan(
+		&i.ID,
+		&i.Status,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getOrdersByStatusWithPagination = `-- name: GetOrdersByStatusWithPagination :many
+SELECT id, status, created_at, updated_at FROM orders
+WHERE status = $1
+ORDER BY updated_at ASC
+LIMIT $2 OFFSET $3
+`
+
+type GetOrdersByStatusWithPaginationParams struct {
+	Status string `json:"status"`
+	Limit  int32  `json:"limit"`
+	Offset int32  `json:"offset"`
+}
+
+// 根據狀態獲取訂單列表（支持分頁）
+func (q *Queries) GetOrdersByStatusWithPagination(ctx context.Context, arg GetOrdersByStatusWithPaginationParams) ([]Order, error) {
+	rows, err := q.db.Query(ctx, getOrdersByStatusWithPagination, arg.Status, arg.Limit, arg.Offset)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []OrderStep{}
+	items := []Order{}
 	for rows.Next() {
-		var i OrderStep
+		var i Order
 		if err := rows.Scan(
 			&i.ID,
-			&i.OrderID,
-			&i.FromStatus,
-			&i.ToStatus,
+			&i.Status,
 			&i.CreatedAt,
+			&i.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}

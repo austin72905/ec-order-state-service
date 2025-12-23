@@ -14,9 +14,9 @@ type OrderStateScheduler struct {
 	interval          time.Duration // 檢查間隔
 	stopChan          chan struct{}
 	rand              *rand.Rand    // 隨機數生成器
-	workerCount       int            // Worker Pool 大小
-	batchSize         int            // 每次處理的訂單數量
-	semaphore         chan struct{}  // 信號量控制並發更新數量
+	workerCount       int           // Worker Pool 大小
+	batchSize         int           // 每次處理的訂單數量
+	semaphore         chan struct{} // 信號量控制並發更新數量
 }
 
 // NewOrderStateScheduler 創建訂單狀態調度器（使用預設配置）
@@ -28,10 +28,10 @@ func NewOrderStateScheduler(orderStateService *service.OrderStateService) *Order
 func NewOrderStateSchedulerWithConfig(orderStateService *service.OrderStateService, workerCount, batchSize int, interval time.Duration) *OrderStateScheduler {
 	// 使用當前時間作為隨機數種子
 	source := rand.NewSource(time.Now().UnixNano())
-	
+
 	// 創建信號量，限制同時進行的資料庫操作（最多 workerCount 個）
 	semaphore := make(chan struct{}, workerCount)
-	
+
 	return &OrderStateScheduler{
 		orderStateService: orderStateService,
 		interval:          interval,
@@ -46,7 +46,7 @@ func NewOrderStateSchedulerWithConfig(orderStateService *service.OrderStateServi
 // Start 啟動調度器
 func (s *OrderStateScheduler) Start() {
 	log.Printf("[定時器] 訂單狀態自動更新調度器已啟動，檢查間隔: %v", s.interval)
-	ticker := time.NewTicker(s.interval)
+	ticker := time.NewTicker(s.interval) // 定時器 每 10 秒觸發一次，NewOrderStateSchedulerWithConfig 創建時有設置interval為10秒
 	defer ticker.Stop()
 
 	// 立即執行一次
@@ -57,7 +57,7 @@ func (s *OrderStateScheduler) Start() {
 		select {
 		case <-ticker.C:
 			s.processOrders()
-		case <-s.stopChan:
+		case <-s.stopChan: // Stop方法會關閉stopChan，這裡會收到關閉信號，停止定時器
 			log.Println("[定時器] 訂單狀態自動更新調度器已停止")
 			return
 		}
@@ -73,7 +73,7 @@ func (s *OrderStateScheduler) Stop() {
 // 每30秒從資料庫查詢已支付以後的訂單（WaitingForShipment 及之後的狀態），並更新到下一個狀態
 func (s *OrderStateScheduler) processOrders() {
 	log.Printf("[定時器] 開始檢查資料庫中的訂單狀態...")
-	
+
 	// 處理待出貨 -> 運送中（已支付後的第一個狀態）
 	s.processStatusTransition(domain.StatusWaitingForShipment, domain.StatusInTransit)
 
@@ -82,7 +82,7 @@ func (s *OrderStateScheduler) processOrders() {
 
 	// 處理待取貨 -> 已完成
 	s.processStatusTransition(domain.StatusWaitPickup, domain.StatusCompleted)
-	
+
 	log.Printf("[定時器] 訂單狀態檢查完成")
 }
 
@@ -165,4 +165,3 @@ func (s *OrderStateScheduler) processBatch(orders []*domain.Order, fromStatus, t
 	log.Printf("[定時器] 成功批量更新 %d 個訂單: %s -> %s", len(orderIDsToUpdate), fromStatus, toStatus)
 	return len(orderIDsToUpdate), 0
 }
-

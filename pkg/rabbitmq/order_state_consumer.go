@@ -13,15 +13,15 @@ import (
 
 // OrderStateConsumer 訂單狀態更新消費者
 type OrderStateConsumer struct {
-	conn          *Connection
-	channel       *amqp.Channel
-	handler       OrderStateEventHandler
-	workerCount   int           // Worker Pool 大小
-	prefetchCount int           // Prefetch count
-	workerChan    chan amqp.Delivery
-	stopChan      chan struct{}
-	wg            sync.WaitGroup
-	mu            sync.RWMutex
+	conn           *Connection
+	channel        *amqp.Channel
+	handler        OrderStateEventHandler
+	workerCount    int // Worker Pool 大小
+	prefetchCount  int // Prefetch count
+	workerChan     chan amqp.Delivery
+	stopChan       chan struct{}
+	wg             sync.WaitGroup
+	mu             sync.RWMutex
 	messageTimeout time.Duration // 消息處理超時時間
 }
 
@@ -65,7 +65,7 @@ func NewOrderStateConsumerWithConfig(conn *Connection, handler OrderStateEventHa
 
 	// 宣告死信交換器
 	err = channel.ExchangeDeclare(
-		dlx,    // exchange name
+		dlx,      // exchange name
 		"direct", // type
 		true,     // durable
 		false,    // auto-deleted
@@ -80,12 +80,12 @@ func NewOrderStateConsumerWithConfig(conn *Connection, handler OrderStateEventHa
 
 	// 宣告 RabbitMQ 死信佇列（用於 RabbitMQ 自動轉發失敗訊息）
 	_, err = channel.QueueDeclare(
-		dlq,    // dead letter queue name
-		true,   // durable
-		false,  // delete when unused
-		false,  // exclusive
-		false,  // no-wait
-		nil,    // arguments
+		dlq,   // dead letter queue name
+		true,  // durable
+		false, // delete when unused
+		false, // exclusive
+		false, // no-wait
+		nil,   // arguments
 	)
 	if err != nil {
 		channel.Close()
@@ -108,11 +108,11 @@ func NewOrderStateConsumerWithConfig(conn *Connection, handler OrderStateEventHa
 	// 宣告應用層死信隊列（用於處理重試超過限制的消息）
 	_, err = channel.QueueDeclare(
 		"order_state_queue_dlq", // application-level dead letter queue name
-		true,                     // durable
-		false,                    // delete when unused
-		false,                    // exclusive
-		false,                    // no-wait
-		nil,                      // arguments
+		true,                    // durable
+		false,                   // delete when unused
+		false,                   // exclusive
+		false,                   // no-wait
+		nil,                     // arguments
 	)
 	if err != nil {
 		channel.Close()
@@ -121,9 +121,9 @@ func NewOrderStateConsumerWithConfig(conn *Connection, handler OrderStateEventHa
 
 	// 綁定應用層死信隊列（使用不同的 routing key）
 	err = channel.QueueBind(
-		"order_state_queue_dlq",              // queue name
-		"order.state.payment.completed.dlq",  // routing key for DLQ
-		"order.state.update",                 // exchange
+		"order_state_queue_dlq",             // queue name
+		"order.state.payment.completed.dlq", // routing key for DLQ
+		"order.state.update",                // exchange
 		false,
 		nil,
 	)
@@ -135,11 +135,11 @@ func NewOrderStateConsumerWithConfig(conn *Connection, handler OrderStateEventHa
 	// 宣告隊列（與後端保持一致，包含死信參數）
 	_, err = channel.QueueDeclare(
 		"order_state_queue", // queue name
-		true,                 // durable
-		false,                // delete when unused
-		false,                // exclusive
-		false,                // no-wait
-		amqp.Table{           // arguments - 設定死信參數
+		true,                // durable
+		false,               // delete when unused
+		false,               // exclusive
+		false,               // no-wait
+		amqp.Table{ // arguments - 設定死信參數
 			"x-dead-letter-exchange":    dlx,
 			"x-dead-letter-routing-key": dlqRoutingKey,
 		},
@@ -151,9 +151,9 @@ func NewOrderStateConsumerWithConfig(conn *Connection, handler OrderStateEventHa
 
 	// 綁定交換器與隊列（使用與後端一致的 routing key）
 	err = channel.QueueBind(
-		"order_state_queue",              // queue name
-		"order.state.payment.completed",  // routing key
-		"order.state.update",             // exchange
+		"order_state_queue",             // queue name
+		"order.state.payment.completed", // routing key
+		"order.state.update",            // exchange
 		false,
 		nil,
 	)
@@ -185,7 +185,7 @@ func NewOrderStateConsumerWithConfig(conn *Connection, handler OrderStateEventHa
 		handler:        handler,
 		workerCount:    workerCount,
 		prefetchCount:  prefetchCount,
-		workerChan:     make(chan amqp.Delivery, bufferSize),
+		workerChan:     make(chan amqp.Delivery, bufferSize), // Worker 都在忙碌時，messageReceiver 仍可繼續接收並放入緩衝區
 		stopChan:       make(chan struct{}),
 		messageTimeout: 30 * time.Second, // 預設 30 秒超時
 	}, nil
@@ -201,6 +201,7 @@ type PaymentCompletedMessage struct {
 // Start 開始消費訊息（使用 Worker Pool 實現並發處理，支持自動重連）
 func (c *OrderStateConsumer) Start() error {
 	// 啟動 worker goroutines
+	// 這邊用waitgroup 等待 go routine 完成
 	for i := 0; i < c.workerCount; i++ {
 		c.wg.Add(1)
 		go func(workerID int) {
@@ -255,20 +256,28 @@ func (c *OrderStateConsumer) messageReceiver() {
 			for msg := range msgs {
 				select {
 				case c.workerChan <- msg:
-					// 成功發送到 worker channel
+					// 成功發送到 worker channel (緩衝區有空間)
 				case <-c.stopChan:
 					// 收到停止信號，拒絕消息並返回
 					msg.Nack(false, true) // 重新入隊
 					return
 				default:
-					// worker channel 已滿，實現背壓：等待一小段時間
+					// worker channel 已滿，實現背壓：等待一小段時間 (背壓處理邏輯)  當下游處理速度跟不上上游生產速度時，向上游施加壓力，減緩或暫停生產，避免系統過載。
+					/*
+						檢測到緩衝區滿，記錄警告
+						等待最多 5 秒，嘗試發送
+						若 5 秒內有空間，發送成功
+						若 5 秒後仍滿載，拒絕消息並重新入隊
+
+					*/
 					log.Printf("警告: worker channel 已滿，等待空間...")
 					select {
 					case c.workerChan <- msg:
 						// 成功發送
 					case <-time.After(5 * time.Second):
+						// 5秒超時
 						// 超時，拒絕消息並記錄
-						log.Printf("錯誤: worker channel 長時間滿載，拒絕消息: orderId=%s", 
+						log.Printf("錯誤: worker channel 長時間滿載，拒絕消息: orderId=%s",
 							c.extractOrderID(msg))
 						msg.Nack(false, true) // 重新入隊
 					case <-c.stopChan:
@@ -305,12 +314,12 @@ func (c *OrderStateConsumer) consumeMessages() (<-chan amqp.Delivery, error) {
 
 	msgs, err := channel.Consume(
 		"order_state_queue", // queue
-		"",                   // consumer
-		false,                // auto-ack
-		false,                // exclusive
-		false,                // no-local
-		false,                // no-wait
-		nil,                  // args
+		"",                  // consumer
+		false,               // auto-ack
+		false,               // exclusive
+		false,               // no-local
+		false,               // no-wait
+		nil,                 // args
 	)
 	if err != nil {
 		return nil, fmt.Errorf("註冊消費者失敗: %w", err)
@@ -390,12 +399,12 @@ func (c *OrderStateConsumer) setupChannel(channel *amqp.Channel) error {
 
 	// 宣告 RabbitMQ 死信佇列（用於 RabbitMQ 自動轉發失敗訊息）
 	_, err := channel.QueueDeclare(
-		dlq,    // dead letter queue name
-		true,   // durable
-		false,  // delete when unused
-		false,  // exclusive
-		false,  // no-wait
-		nil,    // arguments
+		dlq,   // dead letter queue name
+		true,  // durable
+		false, // delete when unused
+		false, // exclusive
+		false, // no-wait
+		nil,   // arguments
 	)
 	if err != nil {
 		return fmt.Errorf("宣告 RabbitMQ 死信佇列失敗: %w", err)
@@ -415,11 +424,11 @@ func (c *OrderStateConsumer) setupChannel(channel *amqp.Channel) error {
 	// 宣告應用層死信隊列（用於處理重試超過限制的消息）
 	_, err = channel.QueueDeclare(
 		"order_state_queue_dlq", // application-level dead letter queue name
-		true,                     // durable
-		false,                    // delete when unused
-		false,                    // exclusive
-		false,                    // no-wait
-		nil,                      // arguments
+		true,                    // durable
+		false,                   // delete when unused
+		false,                   // exclusive
+		false,                   // no-wait
+		nil,                     // arguments
 	)
 	if err != nil {
 		return fmt.Errorf("宣告應用層死信隊列失敗: %w", err)
@@ -526,9 +535,9 @@ func (c *OrderStateConsumer) handleMessage(msg amqp.Delivery, workerID int) {
 	}
 
 	if err != nil {
-		log.Printf("[Worker %d] 處理支付完成事件失敗: %v (重試次數: %d, orderId=%s)", 
+		log.Printf("[Worker %d] 處理支付完成事件失敗: %v (重試次數: %d, orderId=%s)",
 			workerID, err, retryCount, message.OrderID)
-		
+
 		// 檢查重試次數
 		if retryCount >= 3 {
 			log.Printf("[Worker %d] 重試次數已達上限，將消息發送到死信隊列: orderId=%s", workerID, message.OrderID)
@@ -543,7 +552,7 @@ func (c *OrderStateConsumer) handleMessage(msg amqp.Delivery, workerID int) {
 
 		// 增加重試次數並重新發布消息（帶更新的 headers）
 		newRetryCount := retryCount + 1
-		log.Printf("[Worker %d] 增加重試次數並重新發布消息: orderId=%s, retryCount=%d", 
+		log.Printf("[Worker %d] 增加重試次數並重新發布消息: orderId=%s, retryCount=%d",
 			workerID, message.OrderID, newRetryCount)
 		if c.republishWithRetryCount(msg, message, newRetryCount) {
 			msg.Ack(false) // 確認原消息（已重新發布）
@@ -564,7 +573,7 @@ func (c *OrderStateConsumer) getRetryCount(msg amqp.Delivery) int {
 	if msg.Headers == nil {
 		return 0
 	}
-	
+
 	if retryCount, ok := msg.Headers["x-retry-count"]; ok {
 		if count, ok := retryCount.(int); ok {
 			return count
@@ -598,10 +607,10 @@ func (c *OrderStateConsumer) republishWithRetryCount(originalMsg amqp.Delivery, 
 
 	// 重新發布消息，帶更新的重試計數
 	err = channel.Publish(
-		"order.state.update",           // exchange
+		"order.state.update",            // exchange
 		"order.state.payment.completed", // routing key
-		false,                          // mandatory
-		false,                          // immediate
+		false,                           // mandatory
+		false,                           // immediate
 		amqp.Publishing{
 			ContentType:  "application/json",
 			Body:         messageJson,
@@ -645,10 +654,10 @@ func (c *OrderStateConsumer) sendToDLQ(originalMsg amqp.Delivery, message Paymen
 
 	// 使用不同的 routing key 發送到死信隊列
 	err = channel.Publish(
-		"order.state.update",           // exchange
+		"order.state.update",                // exchange
 		"order.state.payment.completed.dlq", // routing key for DLQ
-		false,                          // mandatory
-		false,                          // immediate
+		false,                               // mandatory
+		false,                               // immediate
 		amqp.Publishing{
 			ContentType:  "application/json",
 			Body:         dlqMessage,
@@ -672,21 +681,20 @@ func (c *OrderStateConsumer) sendToDLQ(originalMsg amqp.Delivery, message Paymen
 func (c *OrderStateConsumer) Stop() error {
 	close(c.stopChan)
 	close(c.workerChan)
-	
+
 	// 等待所有 worker 完成
 	c.wg.Wait()
-	
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	
+
 	if c.channel != nil {
 		if err := c.channel.Cancel("", false); err != nil {
 			return err
 		}
 		c.channel.Close()
 	}
-	
+
 	log.Println("RabbitMQ Consumer 已停止")
 	return nil
 }
-
